@@ -118,7 +118,52 @@ kubectl create namespace sakura-gateway-test
 
 ---
 
-## 8. Go のインストール（コントローラーのビルドに必要）
+## 8. さくらのクラウド API キーの準備
+
+コントローラーがさくらのクラウド API Gateway を操作するために、API キーが必要。
+
+### 8-1. API キーの作成
+
+1. [さくらのクラウド コントロールパネル](https://secure.sakura.ad.jp/cloud/) にログイン
+2. 右上メニュー → **APIキー** → **追加**
+3. 以下の設定で作成:
+
+| 項目 | 設定値 |
+|---|---|
+| 種別 | **リソース操作APIキー** |
+| アクセスレベル | **作成・削除** |
+| サービスのアクセス範囲 | **APIゲートウェイ** にチェック |
+
+> **Note:** シングルサーバAPIキーではなく、リソース操作APIキーを選択すること。
+
+4. 作成後、**アクセストークン（UUID）** と **アクセストークンシークレット** をメモする
+
+### 8-2. Kubernetes Secret への登録
+
+```bash
+kubectl create namespace sakura-gateway-system --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl create secret generic sakura-api-credentials \
+  -n sakura-gateway-system \
+  --from-literal=access-token="<アクセストークンUUID>" \
+  --from-literal=access-token-secret="<アクセストークンシークレット>"
+```
+
+### 8-3. 本番 API 接続時の設定
+
+`config/manager/manager.yaml` の環境変数を変更する:
+
+```yaml
+env:
+  - name: SAKURA_DRY_RUN
+    value: "false"   # ← "true" から変更
+```
+
+> **注意:** `SAKURA_DRY_RUN=true`（デフォルト）ではモッククライアントが使われ、実際の API は呼ばれない。本番接続する場合のみ `false` に変更すること。
+
+---
+
+## 9. Go のインストール（コントローラーのビルドに必要）
 
 ```bash
 sudo snap install go --classic
@@ -128,9 +173,9 @@ go version
 
 ---
 
-## 9. コントローラーのビルドとデプロイ
+## 10. コントローラーのビルドとデプロイ
 
-### 9-1. ソースコードの配置
+### 10-1. ソースコードの配置
 
 開発マシンからソースコードを microk8s サーバーにコピーする。
 
@@ -142,14 +187,14 @@ rsync -avz --exclude='.claude' /path/to/sakura-gateway-api/ user@microk8s-server
 git clone <repo-url> ~/sakura-gateway-api
 ```
 
-### 9-2. 依存関係の解決
+### 10-2. 依存関係の解決
 
 ```bash
 cd ~/sakura-gateway-api
 go mod tidy
 ```
 
-### 9-3. レジストリの有効化
+### 10-3. レジストリの有効化
 
 microk8s には組み込みのコンテナレジストリがある。
 
@@ -157,7 +202,7 @@ microk8s には組み込みのコンテナレジストリがある。
 microk8s enable registry
 ```
 
-### 9-4. コンテナイメージのビルドと push
+### 10-4. コンテナイメージのビルドと push
 
 ```bash
 # Docker がない場合は microk8s 組み込みの ctr を使う
@@ -171,7 +216,7 @@ sudo docker build -t localhost:32000/sakura-gateway-controller:dev .
 sudo docker push localhost:32000/sakura-gateway-controller:dev
 ```
 
-### 9-5. CRD のインストール
+### 10-5. CRD のインストール
 
 ```bash
 # カスタム CRD（SakuraGatewayConfig, SakuraAuthPolicy）
@@ -186,7 +231,7 @@ kubectl get crds | grep sakura
 # sakuragatewayconfigs.gateway.sakura.io
 ```
 
-### 9-6. RBAC の適用
+### 10-6. RBAC の適用
 
 ```bash
 kubectl apply -f config/rbac/service_account.yaml
@@ -195,7 +240,7 @@ kubectl apply -f config/rbac/role_binding.yaml
 kubectl apply -f config/rbac/leader_election_role.yaml
 ```
 
-### 9-7. コントローラーのデプロイ
+### 10-7. コントローラーのデプロイ
 
 ```bash
 kubectl apply -f config/manager/manager.yaml
@@ -213,7 +258,7 @@ kubectl get pods -n sakura-gateway-system
 kubectl logs -n sakura-gateway-system -l app=sakura-gateway-controller
 ```
 
-### 9-8. サンプルリソースで動作確認
+### 10-8. サンプルリソースで動作確認
 
 ```bash
 # 順番に適用
@@ -249,7 +294,7 @@ kubectl describe httproute echo-route
 kubectl get svc echo-server-sakura-gw-np
 ```
 
-### 9-9. ローカル実行（デバッグ用）
+### 10-9. ローカル実行（デバッグ用）
 
 コンテナ化せずにホスト上で直接実行する場合:
 
@@ -263,7 +308,7 @@ export KUBECONFIG=~/.kube/config
 SAKURA_DRY_RUN=true go run ./cmd/main.go
 ```
 
-### 9-10. 再ビルド＆再デプロイ（コード変更時）
+### 10-10. 再ビルド＆再デプロイ（コード変更時）
 
 ```bash
 # ビルド → push → Pod 再起動
@@ -272,7 +317,7 @@ sudo docker push localhost:32000/sakura-gateway-controller:dev
 kubectl rollout restart deployment -n sakura-gateway-system sakura-gateway-controller
 ```
 
-### 9-11. サンプルリソースの削除
+### 10-11. サンプルリソースの削除
 
 ```bash
 kubectl delete -f config/samples/05-httproute.yaml
@@ -283,7 +328,7 @@ kubectl delete -f config/samples/01-sakuragatewayconfig.yaml
 kubectl delete -f config/samples/00-credentials.yaml
 ```
 
-### 9-12. コントローラーのアンデプロイ
+### 10-12. コントローラーのアンデプロイ
 
 ```bash
 kubectl delete -f config/manager/manager.yaml
@@ -293,7 +338,7 @@ kubectl delete -f config/crd/bases/
 
 ---
 
-## 10. トラブルシューティング
+## 11. トラブルシューティング
 
 ### microk8s が起動しない
 
@@ -319,7 +364,7 @@ kubectl logs -n kube-system -l k8s-app=kube-dns
 
 ---
 
-## 11. クリーンアップ
+## 12. クリーンアップ
 
 ```bash
 # microk8s の停止

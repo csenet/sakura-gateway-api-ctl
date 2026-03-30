@@ -29,7 +29,7 @@ spec:
             - --leader-elect
           env:
             - name: SAKURA_DRY_RUN
-              value: "true"
+              value: "false"
           ports:
             - containerPort: 8080
               name: metrics
