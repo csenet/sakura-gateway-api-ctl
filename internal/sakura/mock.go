@@ -53,7 +53,7 @@ func transformKey(serviceID, routeID string) string {
 
 func (m *MockClient) ListPlans(_ context.Context) ([]Plan, error) {
 	return []Plan{
-		{ID: "plan-trial", Name: "Trial", Price: 0, MaxServices: 10, MaxRequests: 10000},
+		{ID: "plan-trial", Name: "Trial", Price: "0", MaxServices: 10, MaxRequests: 10000},
 	}, nil
 }
 
