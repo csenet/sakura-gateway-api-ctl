@@ -183,11 +183,19 @@ func (r *HTTPRouteReconciler) ensureNodePortAndUpdateHost(ctx context.Context, h
 				return fmt.Errorf("ensure nodeport for %s: %w", backendName, err)
 			}
 
+			// Get existing service to preserve required fields
+			existingSvc, err := sakuraClient.GetService(ctx, serviceID)
+			if err != nil {
+				return fmt.Errorf("get sakura service: %w", err)
+			}
+
 			// Update Sakura service host with node IP and port
 			port := int(result.NodePort)
 			if err := sakuraClient.UpdateService(ctx, serviceID, sakura.UpdateServiceRequest{
-				Host: result.ExternalIP,
-				Port: &port,
+				Name:     existingSvc.Name,
+				Protocol: existingSvc.Protocol,
+				Host:     result.ExternalIP,
+				Port:     &port,
 			}); err != nil {
 				return fmt.Errorf("update sakura service host: %w", err)
 			}
