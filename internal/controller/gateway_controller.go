@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -25,7 +24,7 @@ import (
 	"github.com/sakura-cloud/sakura-gateway-api/internal/sakura"
 )
 
-// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/finalizers,verbs=update
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gatewayclasses,verbs=get;list;watch
@@ -34,6 +33,7 @@ import (
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 
 // GatewayReconciler reconciles Gateway objects.
+// Gateway = Sakura Subscription. Service creation is handled by HTTPRoute.
 type GatewayReconciler struct {
 	client.Client
 	Scheme       *runtime.Scheme
@@ -63,7 +63,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// Handle deletion
 	if !gw.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, &gw, &gc)
+		return r.reconcileDelete(ctx, &gw)
 	}
 
 	// Add finalizer
@@ -74,27 +74,19 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	// Resolve SakuraGatewayConfig
-	config, sakuraClient, err := r.resolveConfig(ctx, &gc)
+	// Resolve SakuraGatewayConfig and verify subscription
+	config, subscriptionID, err := r.resolveSubscription(ctx, &gc)
 	if err != nil {
 		r.setGatewayCondition(&gw, gatewayv1.GatewayConditionAccepted, metav1.ConditionFalse, "InvalidConfig", err.Error())
 		r.Status().Update(ctx, &gw)
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
-	// Ensure Sakura Service exists
-	serviceID, routeHost, err := r.ensureSakuraService(ctx, sakuraClient, &gw, config)
-	if err != nil {
-		r.setGatewayCondition(&gw, gatewayv1.GatewayConditionAccepted, metav1.ConditionFalse, "ServiceCreationFailed", err.Error())
-		r.Status().Update(ctx, &gw)
-		return ctrl.Result{}, err
-	}
-
-	// Store service ID in annotation
+	// Store subscription ID in annotation for HTTPRoute to use
 	if gw.Annotations == nil {
 		gw.Annotations = make(map[string]string)
 	}
-	gw.Annotations[AnnotationServiceID] = serviceID
+	gw.Annotations[AnnotationSubscriptionID] = subscriptionID
 	if err := r.Update(ctx, &gw); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -107,91 +99,33 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	// Update status
-	gw.Status.Addresses = []gatewayv1.GatewayStatusAddress{
-		{
-			Type:  ptrTo(gatewayv1.HostnameAddressType),
-			Value: routeHost,
-		},
-	}
 	r.setGatewayCondition(&gw, gatewayv1.GatewayConditionAccepted, metav1.ConditionTrue, "Accepted", "Gateway is accepted")
-	r.setGatewayCondition(&gw, gatewayv1.GatewayConditionProgrammed, metav1.ConditionTrue, "Programmed", "Sakura API Gateway service is created")
+	r.setGatewayCondition(&gw, gatewayv1.GatewayConditionProgrammed, metav1.ConditionTrue, "Programmed",
+		fmt.Sprintf("Subscription %s is active", subscriptionID))
 
 	if err := r.Status().Update(ctx, &gw); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	log.Info("Gateway reconciled", "serviceID", serviceID, "routeHost", routeHost)
+	log.Info("Gateway reconciled", "subscriptionID", subscriptionID)
 	return ctrl.Result{}, nil
 }
 
-func (r *GatewayReconciler) resolveConfig(ctx context.Context, gc *gatewayv1.GatewayClass) (*gwapiv1alpha1.SakuraGatewayConfig, sakura.Client, error) {
+func (r *GatewayReconciler) resolveSubscription(ctx context.Context, gc *gatewayv1.GatewayClass) (*gwapiv1alpha1.SakuraGatewayConfig, string, error) {
 	if gc.Spec.ParametersRef == nil {
-		return nil, nil, fmt.Errorf("GatewayClass %q has no parametersRef", gc.Name)
+		return nil, "", fmt.Errorf("GatewayClass %q has no parametersRef", gc.Name)
 	}
 
 	var config gwapiv1alpha1.SakuraGatewayConfig
 	if err := r.Get(ctx, types.NamespacedName{Name: gc.Spec.ParametersRef.Name}, &config); err != nil {
-		return nil, nil, fmt.Errorf("SakuraGatewayConfig %q not found: %w", gc.Spec.ParametersRef.Name, err)
+		return nil, "", fmt.Errorf("SakuraGatewayConfig %q not found: %w", gc.Spec.ParametersRef.Name, err)
 	}
 
 	if config.Status.SubscriptionID == "" {
-		return nil, nil, fmt.Errorf("SakuraGatewayConfig %q has no subscriptionId", config.Name)
+		return nil, "", fmt.Errorf("SakuraGatewayConfig %q has no subscriptionId", config.Name)
 	}
 
-	if r.DryRun && r.SakuraClient != nil {
-		return &config, r.SakuraClient, nil
-	}
-
-	// Create client from credentials
-	var secret corev1.Secret
-	secretKey := types.NamespacedName{
-		Namespace: config.Spec.CredentialsRef.Namespace,
-		Name:      config.Spec.CredentialsRef.Name,
-	}
-	if err := r.Get(ctx, secretKey, &secret); err != nil {
-		return nil, nil, fmt.Errorf("get credentials secret: %w", err)
-	}
-
-	token := string(secret.Data["access-token"])
-	tokenSecret := string(secret.Data["access-token-secret"])
-	return &config, sakura.NewClient(token, tokenSecret), nil
-}
-
-func (r *GatewayReconciler) ensureSakuraService(ctx context.Context, sakuraClient sakura.Client, gw *gatewayv1.Gateway, config *gwapiv1alpha1.SakuraGatewayConfig) (string, string, error) {
-	// Check if service already exists
-	if gw.Annotations != nil {
-		if serviceID, ok := gw.Annotations[AnnotationServiceID]; ok && serviceID != "" {
-			svc, err := sakuraClient.GetService(ctx, serviceID)
-			if err == nil {
-				return svc.ID, svc.RouteHost, nil
-			}
-			if !sakura.IsNotFound(err) {
-				return "", "", err
-			}
-			// Service was deleted externally, recreate
-		}
-	}
-
-	// Determine service name
-	serviceName := fmt.Sprintf("%s_%s", gw.Namespace, gw.Name)
-	if len(serviceName) > 255 {
-		serviceName = serviceName[:255]
-	}
-
-	// Create service
-	svc, err := sakuraClient.CreateService(ctx, sakura.CreateServiceRequest{
-		Name:     serviceName,
-		Protocol: "http",
-		Host:     "placeholder.example.com", // Updated when HTTPRoute creates NodePort
-		Subscription: &sakura.SubscriptionRef{
-			ID: config.Status.SubscriptionID,
-		},
-	})
-	if err != nil {
-		return "", "", fmt.Errorf("create sakura service: %w", err)
-	}
-
-	return svc.ID, svc.RouteHost, nil
+	return &config, config.Status.SubscriptionID, nil
 }
 
 func (r *GatewayReconciler) ensureVerificationSecret(ctx context.Context, gw *gatewayv1.Gateway, config *gwapiv1alpha1.SakuraGatewayConfig) error {
@@ -199,20 +133,17 @@ func (r *GatewayReconciler) ensureVerificationSecret(ctx context.Context, gw *ga
 	var secret corev1.Secret
 	err := r.Get(ctx, types.NamespacedName{Namespace: gw.Namespace, Name: secretName}, &secret)
 	if err == nil {
-		// Secret already exists
 		return nil
 	}
 	if !errors.IsNotFound(err) {
 		return err
 	}
 
-	// Generate random secret
 	secretBytes := make([]byte, 32)
 	if _, err := rand.Read(secretBytes); err != nil {
 		return fmt.Errorf("generate random secret: %w", err)
 	}
 	secretValue := base64.StdEncoding.EncodeToString(secretBytes)
-
 	headerName := config.Spec.GetVerificationHeaderName()
 
 	secret = corev1.Secret{
@@ -236,39 +167,17 @@ func (r *GatewayReconciler) ensureVerificationSecret(ctx context.Context, gw *ga
 	return r.Create(ctx, &secret)
 }
 
-func (r *GatewayReconciler) reconcileDelete(ctx context.Context, gw *gatewayv1.Gateway, gc *gatewayv1.GatewayClass) (ctrl.Result, error) {
+func (r *GatewayReconciler) reconcileDelete(ctx context.Context, gw *gatewayv1.Gateway) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
 	if !controllerutil.ContainsFinalizer(gw, FinalizerName) {
 		return ctrl.Result{}, nil
 	}
 
-	// Delete Sakura resources
-	if serviceID, ok := gw.Annotations[AnnotationServiceID]; ok && serviceID != "" {
-		config, sakuraClient, err := r.resolveConfig(ctx, gc)
-		if err != nil {
-			log.Error(err, "failed to resolve config during deletion, removing finalizer anyway")
-		} else {
-			_ = config // used for verification cleanup if needed
+	// Gateway = Subscription reference only; actual Sakura resources (Service/Route)
+	// are cleaned up by the HTTPRoute controller.
+	// Just remove the finalizer.
 
-			// Delete all routes first
-			routes, err := sakuraClient.ListRoutes(ctx, serviceID)
-			if err == nil {
-				for _, route := range routes {
-					if delErr := sakuraClient.DeleteRoute(ctx, serviceID, route.ID); delErr != nil {
-						log.Error(delErr, "failed to delete route", "routeID", route.ID)
-					}
-				}
-			}
-
-			// Delete service
-			if err := sakuraClient.DeleteService(ctx, serviceID); err != nil && !sakura.IsNotFound(err) {
-				log.Error(err, "failed to delete sakura service", "serviceID", serviceID)
-			}
-		}
-	}
-
-	// Remove finalizer
 	controllerutil.RemoveFinalizer(gw, FinalizerName)
 	if err := r.Update(ctx, gw); err != nil {
 		return ctrl.Result{}, err

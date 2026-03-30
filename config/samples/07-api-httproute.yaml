@@ -1,0 +1,17 @@
+# HTTPRoute for /api path
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: api-route
+  namespace: default
+spec:
+  parentRefs:
+    - name: my-gateway
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: "/api"
+      backendRefs:
+        - name: api-server
+          port: 8080

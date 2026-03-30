@@ -737,11 +737,13 @@ spec:
 
 ### backendRefsの扱い
 
-さくらのAPI Gatewayでは「バックエンドホスト = Service単位で固定」という制約がある。Gateway APIの「ルートごとに異なるbackendRefs」とは設計が異なる。
+さくらのAPI Gatewayでは「バックエンドホスト = Service単位で固定」という制約がある。
 
-現実的な対応:
-1. **Phase 1**: Gatewayに紐づくバックエンドホストは手動設定（SakuraGatewayConfigまたはGateway annotationsで指定）
-2. **Phase 2**: backendRefsからKubernetes ServiceのExternalIPやNodePortを解決し、自動設定
+**対応方針（確定）**: HTTPRoute の backendRef ごとにさくらの Service を作成する。
+- 1 backendRef = 1 さくら Service（独立したバックエンドホスト）
+- コントローラーが backendRef から Kubernetes Service の selector をコピーして NodePort Service を自動作成
+- NodeのExternalIP + NodePort をさくら Service の host に設定
+- 同じ Gateway 配下の複数 HTTPRoute が異なるバックエンドを持てる
 
 ### GatewayVerification（共有シークレットヘッダ）の配置
 
@@ -751,28 +753,76 @@ SakuraGatewayConfigでデフォルト設定を定義し、Gateway配下の全ル
 
 ## さくらAPIリソースとのマッピング表
 
+> **設計変更（2026-03-30）**: 検証の結果、Gateway = Service ではなく **Gateway = Subscription, HTTPRoute backendRef = Service** に変更。
+> さくらのAPI Gatewayは1 Serviceに1バックエンドホストの制約があるため、backendRefごとにServiceを分離する必要がある。
+
 | Gateway API | さくらAPI Gateway | 備考 |
 |---|---|---|
 | GatewayClass | — | コントローラー識別のみ |
-| SakuraGatewayConfig | Subscription | 契約 + API認証 |
-| Gateway | Service | 1 Gateway = 1 Service |
+| SakuraGatewayConfig | API認証情報 | credentials のみ保持 |
+| Gateway | Subscription | 1 Gateway = 1 Subscription（契約） |
 | Gateway listener.hostname | Domain | カスタムドメイン |
 | Gateway listener.tls | Certificate | TLS証明書 |
-| HTTPRoute | Route | 1 HTTPRoute rule = 1 Route |
+| HTTPRoute backendRef | Service | 1 backendRef = 1 Service（バックエンドホスト） |
+| HTTPRoute rules[].matches | Route | path / method のルーティング。Service に紐づく |
 | HTTPRoute filter (RequestHeaderModifier) | Request Transformation | ヘッダ変換 |
 | HTTPRoute filter (ResponseHeaderModifier) | Response Transformation | ヘッダ変換 |
-| SakuraAuthPolicy (jwt/basic/hmac) | User + Authentication | 認証設定 |
-| SakuraAuthPolicy (oidc) | OIDC | OIDC設定 |
+| SakuraAuthPolicy (jwt/basic/hmac) | Service.authentication + User | 認証設定（Service単位） |
+| SakuraAuthPolicy (oidc) | Service.authentication + OIDC | OIDC設定（Service単位） |
 | SakuraAuthPolicy (authorization) | Route Authorization (ACL) | 認可 |
-| SakuraAuthPolicy (cors) | Service corsConfig | CORS |
+| SakuraAuthPolicy (cors) | Service corsConfig | CORS（Service単位） |
 | SakuraAuthPolicy (ipRestriction) | Route ipRestrictionConfig | IP制限 |
+
+### マッピングの詳細
+
+```
+GatewayClass
+  │  parametersRef ──→ SakuraGatewayConfig (API認証情報)
+  ▼
+Gateway ─────────────→ Subscription (契約を参照)
+  │  listeners         Domain / Certificate
+  │
+  ▼
+HTTPRoute
+  │  backendRef: svc-A ──→ さくら Service A (host=NodeIP:NodePort-A)
+  │    rules[0].matches ──→ さくら Route A-1 (path=/api, methods=GET,POST)
+  │    rules[1].matches ──→ さくら Route A-2 (path=/api/v2)
+  │
+  │  backendRef: svc-B ──→ さくら Service B (host=NodeIP:NodePort-B)
+  │    rules[0].matches ──→ さくら Route B-1 (path=/admin)
+```
+
+### コントローラーの処理フロー（改訂版）
+
+**Gateway作成時:**
+1. GatewayClass → SakuraGatewayConfig からAPI認証情報を取得
+2. Subscription IDをSakuraGatewayConfig or Gateway specから取得
+3. Subscription の存在確認
+4. Status更新（Accepted, Programmed）
+
+**HTTPRoute作成時:**
+1. parentRefs から Gateway を取得 → Subscription ID を取得
+2. backendRef ごとに:
+   a. NodePort Service を自動作成
+   b. NodeのExternalIP + NodePort を取得
+   c. さくら Service を作成（`POST /services`、host=NodeIP:NodePort、subscription.id付き）
+   d. Service IDを annotation に保存
+3. rules[].matches ごとに:
+   a. さくら Route を作成（`POST /services/{serviceId}/routes`）
+   b. Request/Response Transform を設定
+4. Status更新（Accepted, ResolvedRefs）
+
+**HTTPRoute削除時:**
+1. さくら Route を削除
+2. さくら Service を削除
+3. NodePort Service を削除
+4. Finalizer 除去
 
 ---
 
 ## 未決事項
 
-- [ ] backendRefsからバックエンドホストを自動解決する仕組み（Phase 2）
-- [ ] 1 Gateway に対して認証方式は1つ（さくらの制約）→ 複数のSakuraAuthPolicyが競合した場合の優先順位
+- [ ] 同じ backendRef を複数 HTTPRoute が参照した場合の Service 共有/重複防止
 - [ ] GatewayVerificationのシークレットローテーション実装詳細
 - [ ] Gateway APIコンフォーマンステストへの対応範囲
 - [ ] ReferenceGrant対応（クロスNamespace参照）

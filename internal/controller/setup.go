@@ -13,12 +13,11 @@ const (
 	FinalizerName = "gateway.sakura.io/finalizer"
 
 	// Annotation keys for tracking Sakura resource IDs.
-	AnnotationServiceID     = "gateway.sakura.io/service-id"
-	AnnotationRouteIDs      = "gateway.sakura.io/route-ids"
-	AnnotationDomainIDs     = "gateway.sakura.io/domain-ids"
+	AnnotationSubscriptionID = "gateway.sakura.io/subscription-id"
+	AnnotationServiceIDs     = "gateway.sakura.io/service-ids"  // JSON map: backendName -> serviceID
+	AnnotationRouteIDs       = "gateway.sakura.io/route-ids"    // JSON map: ruleKey -> routeID
+	AnnotationDomainIDs      = "gateway.sakura.io/domain-ids"
 	AnnotationCertificateIDs = "gateway.sakura.io/certificate-ids"
-	AnnotationNodePortService = "gateway.sakura.io/nodeport-service"
-	AnnotationCreatedSubscription = "gateway.sakura.io/created-subscription"
 
 	// Label for managed resources.
 	LabelManagedBy = "gateway.sakura.io/managed-by"

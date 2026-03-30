@@ -1,5 +1,5 @@
 # Image URL to use all building/pushing image targets
-IMG ?= sakura-gateway-controller:latest
+IMG ?= localhost:32000/sakura-gateway-controller:dev
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -45,40 +45,50 @@ test: manifests generate fmt vet ## Run tests.
 ##@ Build
 
 .PHONY: build
-build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+build: ## Build manager binary.
+	CGO_ENABLED=0 go build -o manager cmd/main.go
 
 .PHONY: run
-run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go
+run: build ## Run a controller from your host.
+	SAKURA_DRY_RUN=true ./manager
 
 .PHONY: docker-build
-docker-build: ## Build docker image with the manager.
-	docker build -t ${IMG} .
+docker-build: build ## Build docker image with the manager.
+	sudo docker build -t ${IMG} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
-	docker push ${IMG}
+	sudo docker push ${IMG}
+
+.PHONY: docker-build-push
+docker-build-push: docker-build docker-push ## Build and push docker image.
 
 ##@ Deployment
 
 .PHONY: install
-install: manifests ## Install CRDs into the K8s cluster specified in ~/.kube/config.
+install: ## Install CRDs into the K8s cluster specified in ~/.kube/config.
 	kubectl apply -f config/crd/bases/
 
 .PHONY: uninstall
-uninstall: manifests ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config.
+uninstall: ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config.
 	kubectl delete -f config/crd/bases/
 
 .PHONY: deploy
-deploy: manifests ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+deploy: docker-build-push ## Build, push, and deploy controller to the K8s cluster.
 	kubectl apply -f config/rbac/
 	kubectl apply -f config/manager/manager.yaml
+	kubectl rollout restart deployment -n sakura-gateway-system sakura-gateway-controller
+	@kubectl delete lease sakura-gateway-api.sakura.io -n sakura-gateway-system 2>/dev/null; true
 
 .PHONY: undeploy
-undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config.
+undeploy: ## Undeploy controller from the K8s cluster.
 	kubectl delete -f config/manager/manager.yaml
 	kubectl delete -f config/rbac/
+
+.PHONY: redeploy
+redeploy: docker-build-push ## Rebuild and restart controller (no RBAC changes).
+	kubectl rollout restart deployment -n sakura-gateway-system sakura-gateway-controller
+	@kubectl delete lease sakura-gateway-api.sakura.io -n sakura-gateway-system 2>/dev/null; true
 
 ##@ Dependencies
 

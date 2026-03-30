@@ -23,12 +23,13 @@ import (
 	"github.com/sakura-cloud/sakura-gateway-api/internal/sakura"
 )
 
-// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 
 // HTTPRouteReconciler reconciles HTTPRoute objects.
+// Each backendRef creates a separate Sakura Service + Route.
 type HTTPRouteReconciler struct {
 	client.Client
 	Scheme       *runtime.Scheme
@@ -93,77 +94,35 @@ func (r *HTTPRouteReconciler) reconcileParent(ctx context.Context, hr *gatewayv1
 		return fmt.Errorf("get parent gateway %s: %w", parentRef.Name, err)
 	}
 
-	// Get service ID from Gateway
-	serviceID := ""
+	// Get subscription ID from Gateway annotation
+	subscriptionID := ""
 	if gw.Annotations != nil {
-		serviceID = gw.Annotations[AnnotationServiceID]
+		subscriptionID = gw.Annotations[AnnotationSubscriptionID]
 	}
-	if serviceID == "" {
-		return fmt.Errorf("gateway %s has no service ID (not yet provisioned)", gw.Name)
+	if subscriptionID == "" {
+		return fmt.Errorf("gateway %s has no subscription ID (not yet provisioned)", gw.Name)
 	}
 
-	// Resolve SakuraGatewayConfig for the gateway
+	// Get Sakura client
 	var gc gatewayv1.GatewayClass
 	if err := r.Get(ctx, types.NamespacedName{Name: string(gw.Spec.GatewayClassName)}, &gc); err != nil {
 		return fmt.Errorf("get gatewayclass: %w", err)
 	}
-
 	sakuraClient, err := r.getSakuraClient(ctx, &gc)
 	if err != nil {
 		return err
 	}
 
-	// Manage NodePort services and update Sakura service host
-	if err := r.ensureNodePortAndUpdateHost(ctx, hr, &gw, serviceID, sakuraClient); err != nil {
-		return err
-	}
-
 	// Get verification secret if available
-	verificationHeaderName := ""
-	verificationHeaderValue := ""
-	verificationSecretName := fmt.Sprintf("%s-gw-secret", gw.Name)
-	var verSecret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Namespace: gw.Namespace, Name: verificationSecretName}, &verSecret); err == nil {
-		verificationHeaderName = string(verSecret.Data["header-name"])
-		verificationHeaderValue = string(verSecret.Data["header-value"])
-	}
+	verHeaderName, verHeaderValue := r.getVerificationSecret(ctx, &gw)
 
-	// Create/update routes for each rule
-	routeIDs := r.getRouteIDs(hr)
-	for i, rule := range hr.Spec.Rules {
-		ruleKey := fmt.Sprintf("rule-%d", i)
-		existingRouteID := routeIDs[ruleKey]
-
-		routeID, err := r.ensureSakuraRoute(ctx, sakuraClient, serviceID, hr, i, rule, existingRouteID)
-		if err != nil {
-			return fmt.Errorf("ensure route for rule %d: %w", i, err)
-		}
-		routeIDs[ruleKey] = routeID
-
-		// Set request transform (shared secret + filters)
-		if err := r.setRequestTransform(ctx, sakuraClient, serviceID, routeID, rule, verificationHeaderName, verificationHeaderValue); err != nil {
-			log.Error(err, "failed to set request transform", "routeID", routeID)
-		}
-
-		// Set response transform if needed
-		if err := r.setResponseTransform(ctx, sakuraClient, serviceID, routeID, rule); err != nil {
-			log.Error(err, "failed to set response transform", "routeID", routeID)
-		}
-	}
-
-	// Store route IDs
-	r.setRouteIDs(hr, routeIDs)
-	if err := r.Update(ctx, hr); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (r *HTTPRouteReconciler) ensureNodePortAndUpdateHost(ctx context.Context, hr *gatewayv1.HTTPRoute, gw *gatewayv1.Gateway, serviceID string, sakuraClient sakura.Client) error {
+	// Track Sakura service IDs and route IDs
+	serviceIDs := r.getAnnotationMap(hr, AnnotationServiceIDs)
+	routeIDs := r.getAnnotationMap(hr, AnnotationRouteIDs)
 	npm := &NodePortManager{Client: r.Client, Scheme: r.Scheme}
 
-	for _, rule := range hr.Spec.Rules {
+	// Process each rule: each backendRef gets its own Sakura Service
+	for i, rule := range hr.Spec.Rules {
 		for _, backendRef := range rule.BackendRefs {
 			if backendRef.Group != nil && *backendRef.Group != "" && *backendRef.Group != "core" {
 				continue
@@ -178,38 +137,99 @@ func (r *HTTPRouteReconciler) ensureNodePortAndUpdateHost(ctx context.Context, h
 				backendPort = int32(*backendRef.Port)
 			}
 
-			result, err := npm.EnsureNodePortService(ctx, hr, backendName, backendPort, hr.Namespace)
+			// 1. Ensure NodePort Service
+			npResult, err := npm.EnsureNodePortService(ctx, hr, backendName, backendPort, hr.Namespace)
 			if err != nil {
 				return fmt.Errorf("ensure nodeport for %s: %w", backendName, err)
 			}
 
-			// Get existing service to preserve required fields
-			existingSvc, err := sakuraClient.GetService(ctx, serviceID)
+			// 2. Ensure Sakura Service (one per backendRef)
+			serviceKey := backendName
+			serviceID, err := r.ensureSakuraService(ctx, sakuraClient, serviceIDs[serviceKey], hr, backendName, npResult, subscriptionID)
 			if err != nil {
-				return fmt.Errorf("get sakura service: %w", err)
+				return fmt.Errorf("ensure sakura service for %s: %w", backendName, err)
+			}
+			serviceIDs[serviceKey] = serviceID
+
+			// 3. Create/Update Route for this rule on this Service
+			ruleKey := fmt.Sprintf("%s-rule-%d", backendName, i)
+			routeID, err := r.ensureSakuraRoute(ctx, sakuraClient, serviceID, hr, i, rule)
+			if err != nil {
+				return fmt.Errorf("ensure route for rule %d: %w", i, err)
+			}
+			routeIDs[ruleKey] = routeID
+
+			// 4. Set request transform (shared secret + filters)
+			if err := r.setRequestTransform(ctx, sakuraClient, serviceID, routeID, rule, verHeaderName, verHeaderValue); err != nil {
+				log.Error(err, "failed to set request transform", "routeID", routeID)
 			}
 
-			// Update Sakura service host with node IP and port
-			port := int(result.NodePort)
-			if err := sakuraClient.UpdateService(ctx, serviceID, sakura.UpdateServiceRequest{
-				Name:     existingSvc.Name,
-				Protocol: existingSvc.Protocol,
-				Host:     result.ExternalIP,
-				Port:     &port,
-			}); err != nil {
-				return fmt.Errorf("update sakura service host: %w", err)
+			// 5. Set response transform if needed
+			if err := r.setResponseTransform(ctx, sakuraClient, serviceID, routeID, rule); err != nil {
+				log.Error(err, "failed to set response transform", "routeID", routeID)
 			}
-
-			// Only handle the first backendRef (Sakura has one host per service)
-			return nil
 		}
+	}
+
+	// Save annotations
+	r.setAnnotationMap(hr, AnnotationServiceIDs, serviceIDs)
+	r.setAnnotationMap(hr, AnnotationRouteIDs, routeIDs)
+	if err := r.Update(ctx, hr); err != nil {
+		return err
 	}
 
 	return nil
 }
 
-func (r *HTTPRouteReconciler) ensureSakuraRoute(ctx context.Context, sakuraClient sakura.Client, serviceID string, hr *gatewayv1.HTTPRoute, ruleIdx int, rule gatewayv1.HTTPRouteRule, existingRouteID string) (string, error) {
-	// Build route from rule
+func (r *HTTPRouteReconciler) ensureSakuraService(ctx context.Context, sakuraClient sakura.Client, existingServiceID string, hr *gatewayv1.HTTPRoute, backendName string, npResult *NodePortResult, subscriptionID string) (string, error) {
+	serviceName := fmt.Sprintf("%s_%s_%s", hr.Namespace, hr.Name, backendName)
+	if len(serviceName) > 255 {
+		serviceName = serviceName[:255]
+	}
+
+	port := int(npResult.NodePort)
+
+	// Check if service already exists
+	if existingServiceID != "" {
+		svc, err := sakuraClient.GetService(ctx, existingServiceID)
+		if err == nil {
+			// Update host/port if changed
+			if svc.Host != npResult.ExternalIP || (svc.Port != nil && *svc.Port != port) {
+				if err := sakuraClient.UpdateService(ctx, existingServiceID, sakura.UpdateServiceRequest{
+					Name:     svc.Name,
+					Protocol: svc.Protocol,
+					Host:     npResult.ExternalIP,
+					Port:     &port,
+				}); err != nil {
+					return "", fmt.Errorf("update service host: %w", err)
+				}
+			}
+			return existingServiceID, nil
+		}
+		if !sakura.IsNotFound(err) {
+			return "", err
+		}
+		// Service deleted externally, recreate below
+	}
+
+	// Create new Sakura Service
+	svc, err := sakuraClient.CreateService(ctx, sakura.CreateServiceRequest{
+		Name:     serviceName,
+		Protocol: "http",
+		Host:     npResult.ExternalIP,
+		Port:     &port,
+		Subscription: &sakura.SubscriptionRef{
+			ID: subscriptionID,
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("create sakura service: %w", err)
+	}
+
+	return svc.ID, nil
+}
+
+func (r *HTTPRouteReconciler) ensureSakuraRoute(ctx context.Context, sakuraClient sakura.Client, serviceID string, hr *gatewayv1.HTTPRoute, ruleIdx int, rule gatewayv1.HTTPRouteRule) (string, error) {
 	routeName := fmt.Sprintf("%s_%s_rule-%d", hr.Namespace, hr.Name, ruleIdx)
 	path := "/"
 	var methods []string
@@ -230,24 +250,7 @@ func (r *HTTPRouteReconciler) ensureSakuraRoute(ctx context.Context, sakuraClien
 		hosts = append(hosts, string(hostname))
 	}
 
-	if existingRouteID != "" {
-		// Update existing route
-		err := sakuraClient.UpdateRoute(ctx, serviceID, existingRouteID, sakura.UpdateRouteRequest{
-			Name:      routeName,
-			Protocols: "http,https",
-			Path:      path,
-			Methods:   methods,
-			Hosts:     hosts,
-		})
-		if err != nil && !sakura.IsNotFound(err) {
-			return "", err
-		}
-		if err == nil {
-			return existingRouteID, nil
-		}
-		// Route was deleted externally, create new one
-	}
-
+	// Always create new route (delete old one first if exists via annotation)
 	route, err := sakuraClient.CreateRoute(ctx, serviceID, sakura.CreateRouteRequest{
 		Name:      routeName,
 		Protocols: "http,https",
@@ -256,6 +259,18 @@ func (r *HTTPRouteReconciler) ensureSakuraRoute(ctx context.Context, sakuraClien
 		Hosts:     hosts,
 	})
 	if err != nil {
+		// If conflict (same host+path), try to find and reuse existing route
+		if sakura.IsConflict(err) {
+			routes, listErr := sakuraClient.ListRoutes(ctx, serviceID)
+			if listErr != nil {
+				return "", err
+			}
+			for _, r := range routes {
+				if r.Name == routeName {
+					return r.ID, nil
+				}
+			}
+		}
 		return "", err
 	}
 
@@ -265,7 +280,6 @@ func (r *HTTPRouteReconciler) ensureSakuraRoute(ctx context.Context, sakuraClien
 func (r *HTTPRouteReconciler) setRequestTransform(ctx context.Context, sakuraClient sakura.Client, serviceID, routeID string, rule gatewayv1.HTTPRouteRule, verHeaderName, verHeaderValue string) error {
 	transform := sakura.RequestTransform{}
 
-	// Shared secret header: remove (prevent forgery) then add
 	if verHeaderName != "" && verHeaderValue != "" {
 		transform.Remove = &sakura.RequestTransformRemove{
 			HeaderKeys: []string{verHeaderName},
@@ -277,37 +291,30 @@ func (r *HTTPRouteReconciler) setRequestTransform(ctx context.Context, sakuraCli
 		}
 	}
 
-	// Process filters
 	for _, filter := range rule.Filters {
-		switch filter.Type {
-		case gatewayv1.HTTPRouteFilterRequestHeaderModifier:
-			if filter.RequestHeaderModifier != nil {
-				mod := filter.RequestHeaderModifier
-				// Add headers
-				for _, h := range mod.Add {
-					if transform.Add == nil {
-						transform.Add = &sakura.RequestTransformAdd{}
-					}
-					transform.Add.Headers = append(transform.Add.Headers, sakura.HeaderKeyValue{
-						Key: string(h.Name), Value: h.Value,
-					})
+		if filter.Type == gatewayv1.HTTPRouteFilterRequestHeaderModifier && filter.RequestHeaderModifier != nil {
+			mod := filter.RequestHeaderModifier
+			for _, h := range mod.Add {
+				if transform.Add == nil {
+					transform.Add = &sakura.RequestTransformAdd{}
 				}
-				// Set headers (map to replace)
-				for _, h := range mod.Set {
-					if transform.Replace == nil {
-						transform.Replace = &sakura.RequestTransformReplace{}
-					}
-					transform.Replace.Headers = append(transform.Replace.Headers, sakura.HeaderKeyValue{
-						Key: string(h.Name), Value: h.Value,
-					})
+				transform.Add.Headers = append(transform.Add.Headers, sakura.HeaderKeyValue{
+					Key: string(h.Name), Value: h.Value,
+				})
+			}
+			for _, h := range mod.Set {
+				if transform.Replace == nil {
+					transform.Replace = &sakura.RequestTransformReplace{}
 				}
-				// Remove headers
-				for _, name := range mod.Remove {
-					if transform.Remove == nil {
-						transform.Remove = &sakura.RequestTransformRemove{}
-					}
-					transform.Remove.HeaderKeys = append(transform.Remove.HeaderKeys, name)
+				transform.Replace.Headers = append(transform.Replace.Headers, sakura.HeaderKeyValue{
+					Key: string(h.Name), Value: h.Value,
+				})
+			}
+			for _, name := range mod.Remove {
+				if transform.Remove == nil {
+					transform.Remove = &sakura.RequestTransformRemove{}
 				}
+				transform.Remove.HeaderKeys = append(transform.Remove.HeaderKeys, name)
 			}
 		}
 	}
@@ -362,45 +369,31 @@ func (r *HTTPRouteReconciler) reconcileDelete(ctx context.Context, hr *gatewayv1
 		return ctrl.Result{}, nil
 	}
 
-	// Delete Sakura routes
-	routeIDs := r.getRouteIDs(hr)
-	for _, parentRef := range hr.Spec.ParentRefs {
-		gwNamespace := hr.Namespace
-		if parentRef.Namespace != nil {
-			gwNamespace = string(*parentRef.Namespace)
-		}
+	// Get Sakura client
+	sakuraClient, err := r.getSakuraClientForDeletion(ctx, hr)
 
-		var gw gatewayv1.Gateway
-		if err := r.Get(ctx, types.NamespacedName{Namespace: gwNamespace, Name: string(parentRef.Name)}, &gw); err != nil {
-			log.Error(err, "failed to get gateway for cleanup")
-			continue
-		}
+	// Delete Sakura routes and services
+	if err == nil {
+		routeIDs := r.getAnnotationMap(hr, AnnotationRouteIDs)
+		serviceIDs := r.getAnnotationMap(hr, AnnotationServiceIDs)
 
-		serviceID := ""
-		if gw.Annotations != nil {
-			serviceID = gw.Annotations[AnnotationServiceID]
-		}
-		if serviceID == "" {
-			continue
-		}
-
-		var gc gatewayv1.GatewayClass
-		if err := r.Get(ctx, types.NamespacedName{Name: string(gw.Spec.GatewayClassName)}, &gc); err != nil {
-			log.Error(err, "failed to get gatewayclass for cleanup")
-			continue
-		}
-
-		sakuraClient, err := r.getSakuraClient(ctx, &gc)
-		if err != nil {
-			log.Error(err, "failed to get sakura client for cleanup")
-			continue
-		}
-
-		for _, routeID := range routeIDs {
-			if err := sakuraClient.DeleteRoute(ctx, serviceID, routeID); err != nil && !sakura.IsNotFound(err) {
-				log.Error(err, "failed to delete route", "routeID", routeID)
+		// Delete routes first
+		for _, serviceID := range serviceIDs {
+			for ruleKey, routeID := range routeIDs {
+				if err := sakuraClient.DeleteRoute(ctx, serviceID, routeID); err != nil && !sakura.IsNotFound(err) {
+					log.Error(err, "failed to delete route", "ruleKey", ruleKey, "routeID", routeID)
+				}
 			}
 		}
+
+		// Delete services
+		for backendName, serviceID := range serviceIDs {
+			if err := sakuraClient.DeleteService(ctx, serviceID); err != nil && !sakura.IsNotFound(err) {
+				log.Error(err, "failed to delete sakura service", "backend", backendName, "serviceID", serviceID)
+			}
+		}
+	} else {
+		log.Error(err, "failed to get sakura client for cleanup, removing finalizer anyway")
 	}
 
 	// Delete managed NodePort services
@@ -420,6 +413,15 @@ func (r *HTTPRouteReconciler) reconcileDelete(ctx context.Context, hr *gatewayv1
 
 	log.Info("HTTPRoute deleted", "name", hr.Name)
 	return ctrl.Result{}, nil
+}
+
+func (r *HTTPRouteReconciler) getVerificationSecret(ctx context.Context, gw *gatewayv1.Gateway) (string, string) {
+	secretName := fmt.Sprintf("%s-gw-secret", gw.Name)
+	var secret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Namespace: gw.Namespace, Name: secretName}, &secret); err != nil {
+		return "", ""
+	}
+	return string(secret.Data["header-name"]), string(secret.Data["header-value"])
 }
 
 func (r *HTTPRouteReconciler) getSakuraClient(ctx context.Context, gc *gatewayv1.GatewayClass) (sakura.Client, error) {
@@ -445,31 +447,50 @@ func (r *HTTPRouteReconciler) getSakuraClient(ctx context.Context, gc *gatewayv1
 		return nil, fmt.Errorf("get credentials secret: %w", err)
 	}
 
-	token := string(secret.Data["access-token"])
-	tokenSecret := string(secret.Data["access-token-secret"])
-	return sakura.NewClient(token, tokenSecret), nil
+	return sakura.NewClient(string(secret.Data["access-token"]), string(secret.Data["access-token-secret"])), nil
 }
 
-func (r *HTTPRouteReconciler) getRouteIDs(hr *gatewayv1.HTTPRoute) map[string]string {
-	routeIDs := make(map[string]string)
-	if hr.Annotations != nil {
-		if data, ok := hr.Annotations[AnnotationRouteIDs]; ok {
-			json.Unmarshal([]byte(data), &routeIDs)
+func (r *HTTPRouteReconciler) getSakuraClientForDeletion(ctx context.Context, hr *gatewayv1.HTTPRoute) (sakura.Client, error) {
+	for _, parentRef := range hr.Spec.ParentRefs {
+		gwNamespace := hr.Namespace
+		if parentRef.Namespace != nil {
+			gwNamespace = string(*parentRef.Namespace)
+		}
+		var gw gatewayv1.Gateway
+		if err := r.Get(ctx, types.NamespacedName{Namespace: gwNamespace, Name: string(parentRef.Name)}, &gw); err != nil {
+			continue
+		}
+		var gc gatewayv1.GatewayClass
+		if err := r.Get(ctx, types.NamespacedName{Name: string(gw.Spec.GatewayClassName)}, &gc); err != nil {
+			continue
+		}
+		client, err := r.getSakuraClient(ctx, &gc)
+		if err == nil {
+			return client, nil
 		}
 	}
-	return routeIDs
+	return nil, fmt.Errorf("could not resolve sakura client from any parentRef")
 }
 
-func (r *HTTPRouteReconciler) setRouteIDs(hr *gatewayv1.HTTPRoute, routeIDs map[string]string) {
+func (r *HTTPRouteReconciler) getAnnotationMap(hr *gatewayv1.HTTPRoute, key string) map[string]string {
+	result := make(map[string]string)
+	if hr.Annotations != nil {
+		if data, ok := hr.Annotations[key]; ok {
+			json.Unmarshal([]byte(data), &result)
+		}
+	}
+	return result
+}
+
+func (r *HTTPRouteReconciler) setAnnotationMap(hr *gatewayv1.HTTPRoute, key string, m map[string]string) {
 	if hr.Annotations == nil {
 		hr.Annotations = make(map[string]string)
 	}
-	data, _ := json.Marshal(routeIDs)
-	hr.Annotations[AnnotationRouteIDs] = string(data)
+	data, _ := json.Marshal(m)
+	hr.Annotations[key] = string(data)
 }
 
 func (r *HTTPRouteReconciler) setRouteCondition(hr *gatewayv1.HTTPRoute, parentRef gatewayv1.ParentReference, condType string, status metav1.ConditionStatus, reason, message string) {
-	// Find or create parent status
 	var parentStatus *gatewayv1.RouteParentStatus
 	for i := range hr.Status.Parents {
 		if hr.Status.Parents[i].ParentRef.Name == parentRef.Name {
