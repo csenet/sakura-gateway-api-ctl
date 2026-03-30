@@ -1,5 +1,7 @@
 # Image URL to use all building/pushing image targets
 IMG ?= localhost:32000/sakura-gateway-controller:dev
+KUBECTL ?= microk8s kubectl
+# Override with: make KUBECTL=kubectl ... (if kubectl is in PATH)
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -67,28 +69,28 @@ docker-build-push: docker-build docker-push ## Build and push docker image.
 
 .PHONY: install
 install: ## Install CRDs into the K8s cluster specified in ~/.kube/config.
-	kubectl apply -f config/crd/bases/
+	$(KUBECTL) apply -f config/crd/bases/
 
 .PHONY: uninstall
 uninstall: ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config.
-	kubectl delete -f config/crd/bases/
+	$(KUBECTL) delete -f config/crd/bases/
 
 .PHONY: deploy
 deploy: docker-build-push ## Build, push, and deploy controller to the K8s cluster.
-	kubectl apply -f config/rbac/
-	kubectl apply -f config/manager/manager.yaml
-	kubectl rollout restart deployment -n sakura-gateway-system sakura-gateway-controller
-	@kubectl delete lease sakura-gateway-api.sakura.io -n sakura-gateway-system 2>/dev/null; true
+	$(KUBECTL) apply -f config/rbac/
+	$(KUBECTL) apply -f config/manager/manager.yaml
+	$(KUBECTL) rollout restart deployment -n sakura-gateway-system sakura-gateway-controller
+	@$(KUBECTL) delete lease sakura-gateway-api.sakura.io -n sakura-gateway-system 2>/dev/null; true
 
 .PHONY: undeploy
 undeploy: ## Undeploy controller from the K8s cluster.
-	kubectl delete -f config/manager/manager.yaml
-	kubectl delete -f config/rbac/
+	$(KUBECTL) delete -f config/manager/manager.yaml
+	$(KUBECTL) delete -f config/rbac/
 
 .PHONY: redeploy
 redeploy: docker-build-push ## Rebuild and restart controller (no RBAC changes).
-	kubectl rollout restart deployment -n sakura-gateway-system sakura-gateway-controller
-	@kubectl delete lease sakura-gateway-api.sakura.io -n sakura-gateway-system 2>/dev/null; true
+	$(KUBECTL) rollout restart deployment -n sakura-gateway-system sakura-gateway-controller
+	@$(KUBECTL) delete lease sakura-gateway-api.sakura.io -n sakura-gateway-system 2>/dev/null; true
 
 ##@ Dependencies
 
