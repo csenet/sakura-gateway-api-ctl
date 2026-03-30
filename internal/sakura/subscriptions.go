@@ -18,7 +18,11 @@ func (c *httpClient) CreateSubscription(ctx context.Context, req CreateSubscript
 	if err != nil {
 		return nil, err
 	}
-	return decodeResponse[Subscription](resp)
+	result, err := decodeResponse[subscriptionResponse](resp)
+	if err != nil {
+		return nil, err
+	}
+	return &result.Subscription, nil
 }
 
 func (c *httpClient) GetSubscription(ctx context.Context, id string) (*Subscription, error) {
@@ -26,7 +30,11 @@ func (c *httpClient) GetSubscription(ctx context.Context, id string) (*Subscript
 	if err != nil {
 		return nil, err
 	}
-	return decodeResponse[Subscription](resp)
+	result, err := decodeResponse[subscriptionResponse](resp)
+	if err != nil {
+		return nil, err
+	}
+	return &result.Subscription, nil
 }
 
 func (c *httpClient) ListSubscriptions(ctx context.Context) ([]Subscription, error) {
@@ -34,7 +42,11 @@ func (c *httpClient) ListSubscriptions(ctx context.Context) ([]Subscription, err
 	if err != nil {
 		return nil, err
 	}
-	return decodeListResponse[Subscription](resp)
+	result, err := decodeResponse[subscriptionListResponse](resp)
+	if err != nil {
+		return nil, err
+	}
+	return result.Subscriptions, nil
 }
 
 func (c *httpClient) UpdateSubscription(ctx context.Context, id string, req UpdateSubscriptionRequest) error {

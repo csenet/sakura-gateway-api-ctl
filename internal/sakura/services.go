@@ -10,7 +10,11 @@ func (c *httpClient) CreateService(ctx context.Context, req CreateServiceRequest
 	if err != nil {
 		return nil, err
 	}
-	return decodeResponse[Service](resp)
+	result, err := decodeResponse[serviceResponse](resp)
+	if err != nil {
+		return nil, err
+	}
+	return &result.Service, nil
 }
 
 func (c *httpClient) GetService(ctx context.Context, id string) (*Service, error) {
@@ -18,7 +22,11 @@ func (c *httpClient) GetService(ctx context.Context, id string) (*Service, error
 	if err != nil {
 		return nil, err
 	}
-	return decodeResponse[Service](resp)
+	result, err := decodeResponse[serviceResponse](resp)
+	if err != nil {
+		return nil, err
+	}
+	return &result.Service, nil
 }
 
 func (c *httpClient) ListServices(ctx context.Context) ([]Service, error) {
@@ -26,7 +34,11 @@ func (c *httpClient) ListServices(ctx context.Context) ([]Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeListResponse[Service](resp)
+	result, err := decodeResponse[serviceListResponse](resp)
+	if err != nil {
+		return nil, err
+	}
+	return result.Services, nil
 }
 
 func (c *httpClient) UpdateService(ctx context.Context, id string, req UpdateServiceRequest) error {

@@ -10,11 +10,80 @@ type apiListResponse[T any] struct {
 	APIGW []T `json:"apigw"`
 }
 
+// Specific response wrappers for Sakura API's nested format.
+// Single resource responses: {"apigw": {"<resource>": {...}}}
+// List responses: {"apigw": {"maxXxx": N, "<resources>": [...]}}
+
+type subscriptionResponse struct {
+	Subscription Subscription `json:"subscription"`
+}
+
+type subscriptionListResponse struct {
+	MaxSubscription int            `json:"maxSubscription"`
+	Subscriptions   []Subscription `json:"subscriptions"`
+}
+
+type serviceResponse struct {
+	Service Service `json:"service"`
+}
+
+type serviceListResponse struct {
+	Services []Service `json:"services"`
+}
+
+type routeResponse struct {
+	Route Route `json:"route"`
+}
+
+type routeListResponse struct {
+	Routes []Route `json:"routes"`
+}
+
+type userResponse struct {
+	User User `json:"user"`
+}
+
+type userListResponse struct {
+	Users []User `json:"users"`
+}
+
+type groupResponse struct {
+	Group Group `json:"group"`
+}
+
+type groupListResponse struct {
+	Groups []Group `json:"groups"`
+}
+
+type oidcResponse struct {
+	OIDC OIDCConfig `json:"oidc"`
+}
+
+type oidcListResponse struct {
+	OIDCs []OIDCConfig `json:"oidcs"`
+}
+
+type domainResponse struct {
+	Domain Domain `json:"domain"`
+}
+
+type domainListResponse struct {
+	Domains []Domain `json:"domains"`
+}
+
+type certificateResponse struct {
+	Certificate Certificate `json:"certificate"`
+}
+
+type certificateListResponse struct {
+	Certificates []Certificate `json:"certificates"`
+}
+
 // Plan represents an API Gateway plan.
 type Plan struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Price       int      `json:"price"`
+	ID          string   `json:"planID"`
+	Name        string   `json:"planName"`
+	Price       string   `json:"price"`
 	MaxServices int      `json:"maxServices"`
 	MaxRequests int      `json:"maxRequests"`
 	Overage     *Overage `json:"overage,omitempty"`
@@ -30,6 +99,7 @@ type Overage struct {
 type Subscription struct {
 	ID             string  `json:"id"`
 	Name           string  `json:"name"`
+	PlanID         string  `json:"planId,omitempty"`
 	ResourceID     int64   `json:"resourceId,omitempty"`
 	MonthlyRequest int64   `json:"monthlyRequest"`
 	Plan           *Plan   `json:"plan,omitempty"`

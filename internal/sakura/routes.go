@@ -12,7 +12,11 @@ func (c *httpClient) CreateRoute(ctx context.Context, serviceID string, req Crea
 	if err != nil {
 		return nil, err
 	}
-	return decodeResponse[Route](resp)
+	result, err := decodeResponse[routeResponse](resp)
+	if err != nil {
+		return nil, err
+	}
+	return &result.Route, nil
 }
 
 func (c *httpClient) GetRoute(ctx context.Context, serviceID, routeID string) (*Route, error) {
@@ -21,7 +25,11 @@ func (c *httpClient) GetRoute(ctx context.Context, serviceID, routeID string) (*
 	if err != nil {
 		return nil, err
 	}
-	return decodeResponse[Route](resp)
+	result, err := decodeResponse[routeResponse](resp)
+	if err != nil {
+		return nil, err
+	}
+	return &result.Route, nil
 }
 
 func (c *httpClient) ListRoutes(ctx context.Context, serviceID string) ([]Route, error) {
@@ -30,7 +38,11 @@ func (c *httpClient) ListRoutes(ctx context.Context, serviceID string) ([]Route,
 	if err != nil {
 		return nil, err
 	}
-	return decodeListResponse[Route](resp)
+	result, err := decodeResponse[routeListResponse](resp)
+	if err != nil {
+		return nil, err
+	}
+	return result.Routes, nil
 }
 
 func (c *httpClient) UpdateRoute(ctx context.Context, serviceID, routeID string, req UpdateRouteRequest) error {
