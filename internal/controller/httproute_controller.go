@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	gwapiv1alpha1 "github.com/sakura-cloud/sakura-gateway-api/api/v1alpha1"
 	"github.com/sakura-cloud/sakura-gateway-api/internal/sakura"
 )
 
@@ -421,22 +422,23 @@ func (r *HTTPRouteReconciler) getSakuraClient(ctx context.Context, gc *gatewayv1
 		return nil, fmt.Errorf("GatewayClass %q has no parametersRef", gc.Name)
 	}
 
-	var config corev1.Secret
-	// Resolve config -> credentials -> client (same pattern as GatewayReconciler)
-	var gwConfig struct {
-		Spec struct {
-			CredentialsRef struct {
-				Name      string
-				Namespace string
-			}
-		}
+	var config gwapiv1alpha1.SakuraGatewayConfig
+	if err := r.Get(ctx, types.NamespacedName{Name: gc.Spec.ParametersRef.Name}, &config); err != nil {
+		return nil, fmt.Errorf("get SakuraGatewayConfig %q: %w", gc.Spec.ParametersRef.Name, err)
 	}
-	_ = gwConfig
 
-	// Simplified: for non-dry-run, we need to resolve the full chain
-	// For now, return error for non-dry-run (will be populated via config resolution)
-	_ = config
-	return nil, fmt.Errorf("non-dry-run mode requires proper config resolution (not yet implemented in HTTPRoute)")
+	var secret corev1.Secret
+	secretKey := types.NamespacedName{
+		Namespace: config.Spec.CredentialsRef.Namespace,
+		Name:      config.Spec.CredentialsRef.Name,
+	}
+	if err := r.Get(ctx, secretKey, &secret); err != nil {
+		return nil, fmt.Errorf("get credentials secret: %w", err)
+	}
+
+	token := string(secret.Data["access-token"])
+	tokenSecret := string(secret.Data["access-token-secret"])
+	return sakura.NewClient(token, tokenSecret), nil
 }
 
 func (r *HTTPRouteReconciler) getRouteIDs(hr *gatewayv1.HTTPRoute) map[string]string {
