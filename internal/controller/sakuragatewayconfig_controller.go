@@ -38,71 +38,68 @@ func (r *SakuraGatewayConfigReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	log.Info("reconciling SakuraGatewayConfig", "name", config.Name)
-
-	// Early return if already accepted and subscription is resolved
-	if config.Status.SubscriptionID != "" {
-		alreadyAccepted := false
-		for _, cond := range config.Status.Conditions {
-			if cond.Type == "Accepted" && cond.Status == metav1.ConditionTrue && cond.ObservedGeneration == config.Generation {
-				alreadyAccepted = true
-				break
-			}
-		}
-		if alreadyAccepted {
-			log.Info("SakuraGatewayConfig already accepted, skipping", "subscriptionID", config.Status.SubscriptionID)
-			return ctrl.Result{}, nil
-		}
+	// Early return if already reconciled for this generation
+	if config.Status.SubscriptionID != "" && isConditionTrue(config.Status.Conditions, "Accepted", config.Generation) {
+		return ctrl.Result{}, nil
 	}
+
+	log.Info("reconciling SakuraGatewayConfig", "name", config.Name)
 
 	// Resolve credentials
 	sakuraClient, err := r.getSakuraClient(ctx, &config)
 	if err != nil {
-		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-			Type:               "Accepted",
-			Status:             metav1.ConditionFalse,
-			Reason:             "InvalidCredentials",
-			Message:            fmt.Sprintf("Failed to resolve credentials: %v", err),
-			ObservedGeneration: config.Generation,
-		})
-		if updateErr := r.Status().Update(ctx, &config); updateErr != nil {
-			log.Error(updateErr, "failed to update status")
-		}
+		r.setStatus(&config, "", metav1.ConditionFalse, "InvalidCredentials",
+			fmt.Sprintf("Failed to resolve credentials: %v", err))
 		return ctrl.Result{}, err
 	}
 
 	// Resolve subscription
 	subscriptionID, err := r.resolveSubscription(ctx, sakuraClient, &config)
 	if err != nil {
-		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
-			Type:               "Accepted",
-			Status:             metav1.ConditionFalse,
-			Reason:             "SubscriptionError",
-			Message:            fmt.Sprintf("Failed to resolve subscription: %v", err),
-			ObservedGeneration: config.Generation,
-		})
-		if updateErr := r.Status().Update(ctx, &config); updateErr != nil {
-			log.Error(updateErr, "failed to update status")
-		}
+		r.setStatus(&config, "", metav1.ConditionFalse, "SubscriptionError",
+			fmt.Sprintf("Failed to resolve subscription: %v", err))
 		return ctrl.Result{}, err
 	}
 
-	// Update status
-	config.Status.SubscriptionID = subscriptionID
+	// Update status only if changed
+	oldSubID := config.Status.SubscriptionID
+	r.setStatus(&config, subscriptionID, metav1.ConditionTrue, "Valid", "Configuration is valid")
+
+	if oldSubID != subscriptionID || !isConditionTrue(config.Status.Conditions, "Accepted", config.Generation) {
+		if err := r.Status().Update(ctx, &config); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("SakuraGatewayConfig reconciled", "subscriptionID", subscriptionID)
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (r *SakuraGatewayConfigReconciler) setStatus(config *gwapiv1alpha1.SakuraGatewayConfig, subID string, status metav1.ConditionStatus, reason, message string) {
+	if subID != "" {
+		config.Status.SubscriptionID = subID
+	}
 	meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
 		Type:               "Accepted",
-		Status:             metav1.ConditionTrue,
-		Reason:             "Valid",
-		Message:            "Configuration is valid",
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
 		ObservedGeneration: config.Generation,
 	})
-
-	if err := r.Status().Update(ctx, &config); err != nil {
-		return ctrl.Result{}, err
+	if status != metav1.ConditionTrue {
+		if updateErr := r.Status().Update(context.Background(), config); updateErr != nil {
+			// Best effort status update on error path
+		}
 	}
+}
 
-	log.Info("SakuraGatewayConfig reconciled", "subscriptionID", subscriptionID)
-	return ctrl.Result{}, nil
+func isConditionTrue(conditions []metav1.Condition, condType string, generation int64) bool {
+	for _, cond := range conditions {
+		if cond.Type == condType && cond.Status == metav1.ConditionTrue && cond.ObservedGeneration >= generation {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *SakuraGatewayConfigReconciler) getSakuraClient(ctx context.Context, config *gwapiv1alpha1.SakuraGatewayConfig) (sakura.Client, error) {
@@ -110,7 +107,6 @@ func (r *SakuraGatewayConfigReconciler) getSakuraClient(ctx context.Context, con
 		return r.SakuraClient, nil
 	}
 
-	// Fetch the credentials secret
 	var secret corev1.Secret
 	secretKey := types.NamespacedName{
 		Namespace: config.Spec.CredentialsRef.Namespace,
@@ -139,7 +135,6 @@ func (r *SakuraGatewayConfigReconciler) resolveSubscription(ctx context.Context,
 		if err != nil {
 			return "", fmt.Errorf("get subscription %s: %w", *config.Spec.Subscription.ID, err)
 		}
-		config.Status.PlanName = ""
 		if sub.Plan != nil {
 			config.Status.PlanName = sub.Plan.Name
 		}
