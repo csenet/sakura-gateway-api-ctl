@@ -233,10 +233,11 @@ func (r *HTTPRouteReconciler) ensureSakuraRoute(ctx context.Context, sakuraClien
 	if existingRouteID != "" {
 		// Update existing route
 		err := sakuraClient.UpdateRoute(ctx, serviceID, existingRouteID, sakura.UpdateRouteRequest{
-			Name:    routeName,
-			Path:    path,
-			Methods: methods,
-			Hosts:   hosts,
+			Name:      routeName,
+			Protocols: "http,https",
+			Path:      path,
+			Methods:   methods,
+			Hosts:     hosts,
 		})
 		if err != nil && !sakura.IsNotFound(err) {
 			return "", err
