@@ -1,0 +1,12 @@
+# Gateway - creates a Sakura API Gateway Service
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: my-gateway
+  namespace: default
+spec:
+  gatewayClassName: sakura
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80

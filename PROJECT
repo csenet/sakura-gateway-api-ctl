@@ -1,0 +1,23 @@
+domain: sakura.io
+layout:
+- go.kubebuilder.io/v4
+projectName: sakura-gateway-api
+repo: github.com/sakura-cloud/sakura-gateway-api
+version: "3"
+resources:
+- api:
+    crdVersion: v1
+  controller: true
+  domain: sakura.io
+  group: gateway
+  kind: SakuraGatewayConfig
+  path: github.com/sakura-cloud/sakura-gateway-api/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+  controller: true
+  domain: sakura.io
+  group: gateway
+  kind: SakuraAuthPolicy
+  path: github.com/sakura-cloud/sakura-gateway-api/api/v1alpha1
+  version: v1alpha1

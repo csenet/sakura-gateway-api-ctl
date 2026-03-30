@@ -1,0 +1,54 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sakura-gateway-manager-role
+rules:
+  # Gateway API standard resources
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["gatewayclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["gatewayclasses/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["gateways"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["gateways/status", "gateways/finalizers"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes/status", "httproutes/finalizers"]
+    verbs: ["get", "update", "patch"]
+
+  # Custom CRDs
+  - apiGroups: ["gateway.sakura.io"]
+    resources: ["sakuragatewayconfigs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["gateway.sakura.io"]
+    resources: ["sakuragatewayconfigs/status", "sakuragatewayconfigs/finalizers"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["gateway.sakura.io"]
+    resources: ["sakuraauthpolicies"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["gateway.sakura.io"]
+    resources: ["sakuraauthpolicies/status", "sakuraauthpolicies/finalizers"]
+    verbs: ["get", "update", "patch"]
+
+  # Core resources
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+
+  # Events
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]

@@ -1,0 +1,112 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: sakuragatewayconfigs.gateway.sakura.io
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.1
+spec:
+  group: gateway.sakura.io
+  names:
+    kind: SakuraGatewayConfig
+    listKind: SakuraGatewayConfigList
+    plural: sakuragatewayconfigs
+    singular: sakuragatewayconfig
+    shortNames:
+      - sgc
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Subscription
+          type: string
+          jsonPath: .status.subscriptionId
+        - name: Plan
+          type: string
+          jsonPath: .status.planName
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: SakuraGatewayConfig is the Schema for the sakuragatewayconfigs API.
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - credentialsRef
+                - subscription
+              properties:
+                credentialsRef:
+                  type: object
+                  required:
+                    - name
+                    - namespace
+                  properties:
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                subscription:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    planId:
+                      type: string
+                    name:
+                      type: string
+                gatewayVerification:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                    headerName:
+                      type: string
+                    rotationInterval:
+                      type: string
+            status:
+              type: object
+              properties:
+                subscriptionId:
+                  type: string
+                planName:
+                  type: string
+                monthlyRequests:
+                  type: integer
+                  format: int64
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                      - reason
+                      - lastTransitionTime
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum: ["True", "False", "Unknown"]
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      observedGeneration:
+                        type: integer
+                        format: int64

@@ -1,0 +1,11 @@
+# GatewayClass - identifies this controller
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: sakura
+spec:
+  controllerName: gateway.sakura.io/controller
+  parametersRef:
+    group: gateway.sakura.io
+    kind: SakuraGatewayConfig
+    name: default

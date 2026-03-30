@@ -1,0 +1,14 @@
+# SakuraGatewayConfig - Sakura Cloud API Gateway configuration
+apiVersion: gateway.sakura.io/v1alpha1
+kind: SakuraGatewayConfig
+metadata:
+  name: default
+spec:
+  credentialsRef:
+    name: sakura-api-credentials
+    namespace: sakura-gateway-system
+  subscription:
+    id: "dummy-subscription-id"
+  gatewayVerification:
+    enabled: true
+    headerName: "X-Gateway-Secret"
