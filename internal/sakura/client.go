@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
@@ -133,6 +135,7 @@ func (c *httpClient) doRequest(ctx context.Context, method, path string, body in
 		if err != nil {
 			return nil, fmt.Errorf("marshal request body: %w", err)
 		}
+		log.Log.Info("sakura api request", "method", method, "path", path, "body", string(jsonBody))
 		bodyReader = bytes.NewReader(jsonBody)
 	}
 

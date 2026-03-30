@@ -25,6 +25,7 @@ spec:
       containers:
         - name: manager
           image: localhost:32000/sakura-gateway-controller:dev
+          imagePullPolicy: Always
           args:
             - --leader-elect
           env:
