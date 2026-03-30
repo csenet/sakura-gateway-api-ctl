@@ -40,6 +40,21 @@ func (r *SakuraGatewayConfigReconciler) Reconcile(ctx context.Context, req ctrl.
 
 	log.Info("reconciling SakuraGatewayConfig", "name", config.Name)
 
+	// Early return if already accepted and subscription is resolved
+	if config.Status.SubscriptionID != "" {
+		alreadyAccepted := false
+		for _, cond := range config.Status.Conditions {
+			if cond.Type == "Accepted" && cond.Status == metav1.ConditionTrue && cond.ObservedGeneration == config.Generation {
+				alreadyAccepted = true
+				break
+			}
+		}
+		if alreadyAccepted {
+			log.Info("SakuraGatewayConfig already accepted, skipping", "subscriptionID", config.Status.SubscriptionID)
+			return ctrl.Result{}, nil
+		}
+	}
+
 	// Resolve credentials
 	sakuraClient, err := r.getSakuraClient(ctx, &config)
 	if err != nil {
@@ -118,7 +133,7 @@ func (r *SakuraGatewayConfigReconciler) getSakuraClient(ctx context.Context, con
 }
 
 func (r *SakuraGatewayConfigReconciler) resolveSubscription(ctx context.Context, sakuraClient sakura.Client, config *gwapiv1alpha1.SakuraGatewayConfig) (string, error) {
-	// If existing ID is specified, verify it
+	// If existing ID is specified in spec, verify it
 	if config.Spec.Subscription.ID != nil && *config.Spec.Subscription.ID != "" {
 		sub, err := sakuraClient.GetSubscription(ctx, *config.Spec.Subscription.ID)
 		if err != nil {
@@ -130,6 +145,19 @@ func (r *SakuraGatewayConfigReconciler) resolveSubscription(ctx context.Context,
 		}
 		config.Status.MonthlyRequests = sub.MonthlyRequest
 		return sub.ID, nil
+	}
+
+	// If we already created a subscription (stored in status), reuse it
+	if config.Status.SubscriptionID != "" {
+		sub, err := sakuraClient.GetSubscription(ctx, config.Status.SubscriptionID)
+		if err == nil {
+			if sub.Plan != nil {
+				config.Status.PlanName = sub.Plan.Name
+			}
+			config.Status.MonthlyRequests = sub.MonthlyRequest
+			return sub.ID, nil
+		}
+		// Subscription was deleted externally, recreate below
 	}
 
 	// Create a new subscription

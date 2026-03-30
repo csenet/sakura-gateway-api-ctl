@@ -165,10 +165,10 @@ microk8s enable registry
 sudo snap install docker
 
 # ビルド
-docker build -t localhost:32000/sakura-gateway-controller:dev .
+sudo docker build -t localhost:32000/sakura-gateway-controller:dev .
 
 # microk8s レジストリに push
-docker push localhost:32000/sakura-gateway-controller:dev
+sudo docker push localhost:32000/sakura-gateway-controller:dev
 ```
 
 ### 9-5. CRD のインストール
@@ -267,8 +267,8 @@ SAKURA_DRY_RUN=true go run ./cmd/main.go
 
 ```bash
 # ビルド → push → Pod 再起動
-docker build -t localhost:32000/sakura-gateway-controller:dev .
-docker push localhost:32000/sakura-gateway-controller:dev
+sudo docker build -t localhost:32000/sakura-gateway-controller:dev .
+sudo docker push localhost:32000/sakura-gateway-controller:dev
 kubectl rollout restart deployment -n sakura-gateway-system sakura-gateway-controller
 ```
 
