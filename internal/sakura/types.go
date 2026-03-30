@@ -91,8 +91,8 @@ type Plan struct {
 
 // Overage represents overage pricing.
 type Overage struct {
-	UnitRequests int `json:"unitRequests"`
-	UnitPrice    int `json:"unitPrice"`
+	UnitRequests int    `json:"unitRequests"`
+	UnitPrice    string `json:"unitPrice"`
 }
 
 // Subscription represents an API Gateway subscription (contract).
@@ -100,7 +100,7 @@ type Subscription struct {
 	ID             string  `json:"id"`
 	Name           string  `json:"name"`
 	PlanID         string  `json:"planId,omitempty"`
-	ResourceID     int64   `json:"resourceId,omitempty"`
+	ResourceID     string  `json:"resourceId,omitempty"`
 	MonthlyRequest int64   `json:"monthlyRequest"`
 	Plan           *Plan   `json:"plan,omitempty"`
 	CreatedAt      string  `json:"createdAt,omitempty"`
