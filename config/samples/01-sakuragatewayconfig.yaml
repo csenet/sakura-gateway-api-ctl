@@ -8,7 +8,8 @@ spec:
     name: sakura-api-credentials
     namespace: sakura-gateway-system
   subscription:
-    id: "dummy-subscription-id"
+    planId: "plan-trial"
+    name: "dev-subscription"
   gatewayVerification:
     enabled: true
     headerName: "X-Gateway-Secret"
