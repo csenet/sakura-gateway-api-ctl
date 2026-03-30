@@ -49,10 +49,8 @@ func SetupControllers(mgr ctrl.Manager, dryRun bool) error {
 	}
 
 	if err := (&GatewayReconciler{
-		Client:       mgr.GetClient(),
-		Scheme:       mgr.GetScheme(),
-		DryRun:       dryRun,
-		SakuraClient: sakuraClient,
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		return err
 	}

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -21,7 +22,6 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	gwapiv1alpha1 "github.com/sakura-cloud/sakura-gateway-api/api/v1alpha1"
-	"github.com/sakura-cloud/sakura-gateway-api/internal/sakura"
 )
 
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch;update;patch
@@ -36,9 +36,7 @@ import (
 // Gateway = Sakura Subscription. Service creation is handled by HTTPRoute.
 type GatewayReconciler struct {
 	client.Client
-	Scheme       *runtime.Scheme
-	DryRun       bool
-	SakuraClient sakura.Client
+	Scheme *runtime.Scheme
 }
 
 func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
