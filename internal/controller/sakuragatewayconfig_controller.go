@@ -48,37 +48,34 @@ func (r *SakuraGatewayConfigReconciler) Reconcile(ctx context.Context, req ctrl.
 	// Resolve credentials
 	sakuraClient, err := r.getSakuraClient(ctx, &config)
 	if err != nil {
-		r.setStatus(&config, "", metav1.ConditionFalse, "InvalidCredentials",
+		setStatusCondition(&config, metav1.ConditionFalse, "InvalidCredentials",
 			fmt.Sprintf("Failed to resolve credentials: %v", err))
+		_ = r.Status().Update(ctx, &config)
 		return ctrl.Result{}, err
 	}
 
 	// Resolve subscription
 	subscriptionID, err := r.resolveSubscription(ctx, sakuraClient, &config)
 	if err != nil {
-		r.setStatus(&config, "", metav1.ConditionFalse, "SubscriptionError",
+		setStatusCondition(&config, metav1.ConditionFalse, "SubscriptionError",
 			fmt.Sprintf("Failed to resolve subscription: %v", err))
+		_ = r.Status().Update(ctx, &config)
 		return ctrl.Result{}, err
 	}
 
-	// Update status only if changed
-	oldSubID := config.Status.SubscriptionID
-	r.setStatus(&config, subscriptionID, metav1.ConditionTrue, "Valid", "Configuration is valid")
+	// Update status
+	config.Status.SubscriptionID = subscriptionID
+	setStatusCondition(&config, metav1.ConditionTrue, "Valid", "Configuration is valid")
 
-	if oldSubID != subscriptionID || !isConditionTrue(config.Status.Conditions, "Accepted", config.Generation) {
-		if err := r.Status().Update(ctx, &config); err != nil {
-			return ctrl.Result{}, err
-		}
-		log.Info("SakuraGatewayConfig reconciled", "subscriptionID", subscriptionID)
+	if err := r.Status().Update(ctx, &config); err != nil {
+		return ctrl.Result{}, err
 	}
 
+	log.Info("SakuraGatewayConfig reconciled", "subscriptionID", subscriptionID)
 	return ctrl.Result{}, nil
 }
 
-func (r *SakuraGatewayConfigReconciler) setStatus(config *gwapiv1alpha1.SakuraGatewayConfig, subID string, status metav1.ConditionStatus, reason, message string) {
-	if subID != "" {
-		config.Status.SubscriptionID = subID
-	}
+func setStatusCondition(config *gwapiv1alpha1.SakuraGatewayConfig, status metav1.ConditionStatus, reason, message string) {
 	meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
 		Type:               "Accepted",
 		Status:             status,
@@ -86,11 +83,6 @@ func (r *SakuraGatewayConfigReconciler) setStatus(config *gwapiv1alpha1.SakuraGa
 		Message:            message,
 		ObservedGeneration: config.Generation,
 	})
-	if status != metav1.ConditionTrue {
-		if updateErr := r.Status().Update(context.Background(), config); updateErr != nil {
-			// Best effort status update on error path
-		}
-	}
 }
 
 func isConditionTrue(conditions []metav1.Condition, condType string, generation int64) bool {
