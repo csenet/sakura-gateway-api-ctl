@@ -10,7 +10,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	gwapiv1alpha1 "github.com/sakura-cloud/sakura-gateway-api/api/v1alpha1"
@@ -95,8 +97,31 @@ func (r *GatewayClassReconciler) validateParametersRef(ctx context.Context, gc *
 	return fmt.Errorf("SakuraGatewayConfig %q is not accepted yet", ref.Name)
 }
 
+func (r *GatewayClassReconciler) findGatewayClassesForConfig(ctx context.Context, obj client.Object) []reconcile.Request {
+	config, ok := obj.(*gwapiv1alpha1.SakuraGatewayConfig)
+	if !ok {
+		return nil
+	}
+
+	var gcList gatewayv1.GatewayClassList
+	if err := r.List(ctx, &gcList); err != nil {
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, gc := range gcList.Items {
+		if gc.Spec.ParametersRef != nil && gc.Spec.ParametersRef.Name == config.Name {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: gc.Name},
+			})
+		}
+	}
+	return requests
+}
+
 func (r *GatewayClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&gatewayv1.GatewayClass{}).
+		Watches(&gwapiv1alpha1.SakuraGatewayConfig{}, handler.EnqueueRequestsFromMapFunc(r.findGatewayClassesForConfig)).
 		Complete(r)
 }
